@@ -1,13 +1,13 @@
 #![allow(dead_code)]
 #![allow(unused)]
 
-//! Collection of EtherType values for notable protocols.
-
 pub mod ethtype {
-
-    #[derive(Clone, Debug)]
+    //! Collection of EtherType values for notable protocols.
+    #[derive(Clone, Debug, Copy, PartialEq)]
     pub enum EtherType {
         IPv4,
+        /// Neighbor Detection Protocol, part of Rip implementation.
+        NDP,
         ARP,
         RARP,
         IPX,
@@ -22,6 +22,7 @@ pub mod ethtype {
         fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
             match *self {
                 IPv4 => write!(f, "Internet Protocol version 4"),
+                NDP => write!(f, "Neighbor Detection Protocol"),
                 ARP => write!(f, "Address Resolution Protocol"),
                 RARP => write!(f, "Reverse Address Resolution Protocol"),
                 IPX => write!(f, "Internetwork Packet Exchange"),
@@ -42,6 +43,7 @@ pub mod ethtype {
             else {
                 match value {
                     0x0800 => IPv4,
+                    0x1101 => NDP,
                     0x0806 => ARP,
                     0x8035 => RARP,
                     0x8137 => IPX,
@@ -57,6 +59,8 @@ pub mod ethtype {
         fn from(ethtype: EtherType) -> Self {
             match ethtype {
                 IPv4 => 0x0800,
+                /// Rip specific. The number is my birthday.
+                NDP => 0x1101,
                 ARP => 0x0806,
                 RARP => 0x8035,
                 IPX => 0x8137,

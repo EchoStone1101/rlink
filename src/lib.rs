@@ -10,17 +10,25 @@
 //! thread safety on single `pcap_t` either.
 
 pub mod ethtype;
+pub mod device_pool;
+pub mod packet;
 
-use pcap::{Capture, Device, Active, Linktype, Direction, Packet, Stat};
-use pcap::Error as PError;
-use mac_address::MacAddress;
+use pcap::{Capture, Active, Linktype, Packet as _Packet, PacketHeader, Stat};
+pub use pcap::{Device, Direction};
+pub use pcap::Error as PError;
+pub use mac_address::MacAddress;
 use crc::{Crc, CRC_32_CKSUM};
 use std::fmt;
 use std::error::Error;
 use std::borrow::Borrow;
-pub use ethtype::ethtype::EtherType;
 
-type DeviceCallback = Box<dyn for <'a> Fn(Packet<'a>, &MacAddress)->Option<Packet<'a>>>;
+pub use ethtype::ethtype::EtherType;
+pub use packet::packet::Packet;
+pub use packet::packet::{Type, Raw, Eth};
+pub use device_pool::device_pool::DevicePool;
+
+
+type DeviceCallback = Box<dyn Fn(Packet<Raw>, &MacAddress)->Option<Packet<Raw>>>;
 
 /// An active network device to operate on.
 pub struct DeviceHandle {
@@ -49,6 +57,10 @@ pub enum RlinkError {
     PayloadTooLarge,
     /// Payload size mismatch with specified length
     PayloadLengthMismatch,
+    /// Invalid Packet Format
+    InvalidPacket(Packet::<Raw>, &'static str),
+    /// Broken Device Pool
+    BrokenDevicePool,
 }
 
 impl fmt::Display for RlinkError {
@@ -58,6 +70,8 @@ impl fmt::Display for RlinkError {
             InvalidDeviceName(name) => write!(f, "invalid device name: {:?}", name),
             PayloadTooLarge => write!(f, "payload too large"),
             PayloadLengthMismatch => write!(f, "payload size mismatch with ether type"),
+            InvalidPacket(_, why) => write!(f, "invalid packet format: {}", why),
+            BrokenDevicePool => write!(f, "all devices in the pool are offline"),
         }
     }
 }
@@ -73,13 +87,15 @@ impl DeviceHandle {
     /// * `name` - the name of target device.
     /// 
     /// Returns the newly created DeviceHandle or an Error.
-    pub fn new(name: &str, timeout: i32) -> Result<Self, Box<dyn Error>> {
+    pub fn new(name: &str, timeout: i32, immediate: bool) 
+        -> Result<Self, Box<dyn Error>> {
         match Device::list()?
             .iter()
             .find(|&x| x.name.eq(name)) {
             Some(device) => {
                 let cap = Capture::from_device(device.name.as_str())?
                     .timeout(timeout)
+                    .immediate_mode(immediate)
                     .open()?;
                 let mac_address = mac_address::mac_address_by_name(name)?.unwrap();
                 Ok(DeviceHandle{
@@ -96,6 +112,10 @@ impl DeviceHandle {
     /// Returns the associated device.
     pub fn device(&self) -> &Device {
         &self.device
+    }
+
+    pub fn mac_address(&self) ->&MacAddress {
+        &self.mac_address
     }
 
     /// List the datalink types that this captured device supports.
@@ -151,7 +171,7 @@ impl DeviceHandle {
     pub fn send_packet<B: Borrow<[u8]>>(&mut self,
         payload: B,
         ethtype: EtherType,
-        dest_mac: [u8; 6],
+        dest_mac: &[u8; 6],
         checksum: bool,
     ) -> Result<(), Box<dyn Error>> {
         let payload = payload.borrow();
@@ -187,7 +207,9 @@ impl DeviceHandle {
                         checksum.to_be_bytes().as_ref()].concat())?;
                 }
                 else {
-                    self.cap.sendpacket(frame.as_ref())?;
+                    self.cap.sendpacket([
+                        frame.as_ref(), 
+                        0u32.to_be_bytes().as_ref()].concat())?;
                 }
                 Ok(())
             }
@@ -203,8 +225,10 @@ impl DeviceHandle {
     /// Read a packet from this capture handle’s interface. May or may not block,
     /// based on the handle setting. A callback function, if registered, will be
     /// invoked on the packet first. 
-    pub fn next_packet(&mut self) -> Result<Option<Packet>, PError> {
-        let packet = self.cap.next_packet()?;
+    /// The callback function might take the packet, hence the return value is
+    /// `Option<Packet>` rather than `Packet`.
+    pub fn next_packet(&mut self) -> Result<Option<Packet<Raw>>, PError> {
+        let packet = Packet::<Raw>::from(self.cap.next_packet()?, self.mac_address.clone());
         if let Some(func) = &self.callback {
             Ok(func(packet, &self.mac_address))
         }
